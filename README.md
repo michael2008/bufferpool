@@ -1,7 +1,7 @@
 # About
-This is varying-sized buffer pool wrapping for bytes.Buffer.
-It manages sub-pools of varying sizes to optimize memory usage.
-It is suitable for callers that knows the exact or approximate size of desired buffers.
+This is a varying-sized buffer pool wrapping for bytes.Buffer.
+It manages sub-pools of varying sizes to optimize memory usage, and is
+suitable for use cases that knowing the exact or approximate size of desired buffers.
 
 # Example
 
