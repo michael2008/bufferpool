@@ -32,7 +32,7 @@ var defaultPoolSizes = []int{
 var _once sync.Once
 
 // globalPool is a static Pool for reusing byte buffers of various sizes.
-var globalPool = MustNew(defaultPoolSizes)
+var globalPool *BufferPool
 
 // MaxLength is the maximum length of sub pool size.
 // Generally, storing an excessively large element in the Pool will consume
@@ -85,6 +85,21 @@ type Buffer struct {
 	rSize int
 }
 
+func newBuffer(size int) *Buffer {
+	if size <= 0 {
+		size = 0
+	}
+	return &Buffer{
+		Buffer: bytes.NewBuffer(make([]byte, 0, size)),
+		rSize:  size,
+	}
+}
+
+func (b *Buffer) reset(rSize int) {
+	b.Buffer.Reset()
+	b.rSize = rSize
+}
+
 // Get wraps [pkg/sync.Pool.Get].
 func (p *Pool[T]) Get() T {
 	p.init()
@@ -111,11 +126,11 @@ func (p *Pool[T]) Put(x T) {
 type BufferPool struct {
 	once sync.Once
 	// Sub-pools with predefined sizes
-	pools []Pool[*bytes.Buffer]
+	pools []Pool[*Buffer]
 	// Sorted sizes for each pool
 	sizes []int
 	// A pool for unknown size
-	any *Pool[*bytes.Buffer]
+	any *Pool[*Buffer]
 }
 
 func (p *BufferPool) init() {
@@ -124,15 +139,16 @@ func (p *BufferPool) init() {
 			p.sizes = defaultPoolSizes
 		}
 		// Create pools for each size
-		pools := make([]Pool[*bytes.Buffer], len(p.sizes))
+		pools := make([]Pool[*Buffer], len(p.sizes))
 		for i := range pools {
-			pools[i].New = func() *bytes.Buffer {
-				return bytes.NewBuffer(make([]byte, 0, p.sizes[i]))
+			size := p.sizes[i]
+			pools[i].New = func() *Buffer {
+				return newBuffer(size)
 			}
 		}
-		ap := &Pool[*bytes.Buffer]{
-			New: func() *bytes.Buffer {
-				return bytes.NewBuffer(nil)
+		ap := &Pool[*Buffer]{
+			New: func() *Buffer {
+				return newBuffer(0)
 			},
 		}
 		p.any = ap
@@ -210,36 +226,24 @@ func (p *BufferPool) findPoolIndex(length int) int {
 //   - if length <=0 (meaning the size is unknown), Get returns a buffer from an internal dedicated pool.
 //   - if length is larger than the max sub pool size, Get returns a new buffer
 //     than can hold the given length. note that the buffer won't be put back to the pool when calling Put.
-func (p *BufferPool) Get(length int) (buffer *Buffer) {
+func (p *BufferPool) Get(length int) *Buffer {
 	p.init()
-	buffer = &Buffer{Buffer: bytes.NewBuffer(nil), rSize: length}
 	if length <= 0 {
-		if buf := p.any.Get(); buf != nil {
-			buf.Reset()
-			buffer.Buffer = buf
-		}
-		return
+		buf := p.any.Get()
+		buf.reset(0)
+		return buf
 	}
 	// Find the appropriate pool index
 	idx := p.findPoolIndex(length)
 	if idx < 0 {
 		// If the requested size is larger than our largest pool, just allocate a new buffer
 		// that can hold the requested size.
-		buffer.Grow(length)
-		return
+		return newBuffer(length)
 	}
 	// Try to get a buffer from the pool
 	buf := p.pools[idx].Get()
-	if buf == nil {
-		// this should not happen, but just in case
-		buffer.Grow(p.sizes[idx])
-		return
-	}
-
-	// Reset the buffer and ensure it has the right capacity
-	buf.Reset()
-	buffer.Buffer = buf
-	return
+	buf.reset(length)
+	return buf
 }
 
 // Put adds a buffer to the pool.
@@ -262,8 +266,8 @@ func (p *BufferPool) Put(buf *Buffer) {
 
 	if buf.rSize <= 0 {
 		// Put the buffer back in the dedicated pool.
-		buf.Reset()
-		p.any.Put(buf.Buffer)
+		buf.reset(0)
+		p.any.Put(buf)
 	} else {
 		// Find the pool that would have created this buffer.
 		// We need to find the pool with size <= capacity that is closest to capacity
@@ -279,9 +283,9 @@ func (p *BufferPool) Put(buf *Buffer) {
 		}
 
 		// Reset the buffer before returning it to the pool
-		buf.Reset()
+		buf.reset(p.sizes[idx])
 
 		// Put the buffer back in the pool
-		p.pools[idx].Put(buf.Buffer)
+		p.pools[idx].Put(buf)
 	}
 }
